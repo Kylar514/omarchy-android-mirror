@@ -73,7 +73,7 @@ sleep: Always_. Tweak the Wi-Fi values in the widget settings.
 ## Remove
 
 ```sh
-omarchy plugin remove io.github.ayan-de.android-mirror
+omarchy plugin remove omarchy-android-mirror
 ```
 
 That deletes the plugin and its bar entry. It leaves the packages it
@@ -109,10 +109,10 @@ Inside the panel:
 ## IPC
 
 ```sh
-omarchy-shell io.github.ayan-de.android-mirror mirror   # mirror first ready phone
-omarchy-shell io.github.ayan-de.android-mirror stop
-omarchy-shell io.github.ayan-de.android-mirror install  # open the package install terminal
-omarchy-shell io.github.ayan-de.android-mirror toggle   # open/close the panel
+omarchy-shell omarchy-android-mirror mirror   # mirror first ready phone
+omarchy-shell omarchy-android-mirror stop
+omarchy-shell omarchy-android-mirror install  # open the package install terminal
+omarchy-shell omarchy-android-mirror toggle   # open/close the panel
 ```
 
 Bind `mirror` to a key in `~/.config/hypr/bindings.conf` if you like.
@@ -132,7 +132,7 @@ tests/             node --test tests/
 ```sh
 
 omarchy plugin add "$PWD" --enable     # or rsync into ~/.config/omarchy/plugins/<id>/
-omarchy plugin validate ~/.config/omarchy/plugins/io.github.ayan-de.android-mirror
+omarchy plugin validate ~/.config/omarchy/plugins/omarchy-android-mirror
 node --test tests/
 ```
 

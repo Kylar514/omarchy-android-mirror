@@ -12,8 +12,8 @@ import "Model.js" as Model
 // stop the running mirror). Middle click: refresh the device list.
 Ui.Panel {
   id: root
-  moduleName: "io.github.ayan-de.android-mirror"
-  ipcTarget: "io.github.ayan-de.android-mirror"
+  moduleName: "omarchy-android-mirror"
+  ipcTarget: "omarchy-android-mirror"
   manageIpc: false
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
@@ -28,6 +28,7 @@ Ui.Panel {
 
   property int cursor: 0
   property bool showPairing: false
+  property bool showKeys: false
   property string pairEndpoint: ""
   property string pairCode: ""
   property string connectEndpoint: ""
@@ -38,21 +39,80 @@ Ui.Panel {
 
   function refreshNow() { backend.refresh() }
 
-  function mirrorSelected() {
+  // Every keyboard stop in panel order: a row per device, then the Wi-Fi
+  // controls. j/k walk this list; enter acts on the stop under the cursor.
+  readonly property var stops: {
+    if (backend.toolsMissing) return ["install"]
+    var s = []
+    for (var i = 0; i < devices.length; i++) s.push("dev:" + i)
+    s.push("connect", "pairToggle")
+    if (showPairing) s.push("pairAddr", "pairCode", "pairGo")
+    return s
+  }
+  readonly property int cur: Math.max(0, Math.min(cursor, stops.length - 1))
+  readonly property string stop: stops[cur]
+
+  function goTo(name) {
+    var i = stops.indexOf(name)
+    if (i >= 0) cursor = i
+  }
+
+  function note(message, ok) {
+    backend.actionOk = ok
+    backend.actionMessage = message
+  }
+
+  function cursorDevice() {
+    return stop.indexOf("dev:") === 0 ? devices[parseInt(stop.slice(4), 10)] : readyDevices[0]
+  }
+
+  function toggleMirror(d) {
     if (backend.mirroring) { backend.stopMirror(); return }
-    var d = readyDevices[Math.max(0, Math.min(cursor, readyDevices.length - 1))]
-    if (d) backend.mirror(d)
+    if (d && d.ready) backend.mirror(d)
+  }
+
+  function mirrorSelected() { toggleMirror(cursorDevice()) }
+
+  function goHome() {
+    var d = backend.mirroring || cursorDevice()
+    if (d && d.ready) { backend.goHome(d); note("Home sent to " + Model.deviceTitle(d), true) }
+    else note("No ready device for Home", false)
+  }
+
+  function editField(field) {
+    field.forceActiveFocus()
+  }
+
+  function activate() {
+    switch (stop) {
+    case "install": backend.installTools(); break
+    case "connect": editField(connectField); break
+    case "pairToggle": showPairing = !showPairing; break
+    case "pairAddr": editField(pairEndpointField); break
+    case "pairCode": editField(pairCodeField); break
+    case "pairGo": backend.pair(pairEndpoint, pairCode); break
+    default:
+      var d = cursorDevice()
+      if (d && !d.ready) note(Model.stateHint(d.state), false)
+      else mirrorSelected()
+    }
+  }
+
+  function togglePairing() {
+    showPairing = !showPairing
+    if (!showPairing) return
+    goTo("pairAddr")
+    Qt.callLater(function() { pairEndpointField.forceActiveFocus() })
   }
 
   function handleBarPress(buttonCode) {
-    if (buttonCode === Qt.RightButton) { cursor = 0; mirrorSelected(); return }
+    if (buttonCode === Qt.RightButton) { toggleMirror(readyDevices[0]); return }
     if (buttonCode === Qt.MiddleButton) { refreshNow(); return }
     toggle()
   }
 
   function moveCursor(delta) {
-    if (readyDevices.length === 0) return
-    cursor = (cursor + delta + readyDevices.length) % readyDevices.length
+    cursor = (cur + delta + stops.length) % stops.length
   }
 
   MirrorBackend {
@@ -76,11 +136,10 @@ Ui.Panel {
     function hide(): void { root.close() }
     function toggle(): void { root.toggle() }
     function refresh(): string { root.refreshNow(); return "ok" }
-    // omarchy-shell shell ipc io.github.ayan-de.android-mirror mirror
+    // omarchy-shell shell ipc omarchy-android-mirror mirror
     function mirror(): string {
-      root.cursor = 0
       if (root.readyDevices.length === 0) return "no device"
-      root.mirrorSelected()
+      root.toggleMirror(root.readyDevices[0])
       return "ok"
     }
     function stop(): string { backend.stopMirror(); return "ok" }
@@ -116,13 +175,29 @@ Ui.Panel {
         || (pairCodeField.visible && pairCodeField.activeFocus)
         || (connectField.visible && connectField.activeFocus)
 
-      onActivateRequested: root.mirrorSelected()
+      onActivateRequested: root.activate()
       onCloseRequested: root.close()
       onMoveRequested: function(dx, dy) { if (dy !== 0) root.moveCursor(dy) }
+      onDeleteRequested: {
+        var d = root.cursorDevice()
+        if (d && d.transport === "wifi") backend.disconnect(d.serial)
+        else root.note("x disconnects a Wi-Fi device", false)
+      }
       onTextKey: function(text) {
         if (text === "r") root.refreshNow()
-        else if (text === "p") root.showPairing = !root.showPairing
-        else if (text === "w" && root.usbDevices.length > 0) backend.enableWifi(root.usbDevices[0].serial)
+        else if (text === "p") root.togglePairing()
+        else if (text === "H") root.goHome()
+        else if (text === "?") root.showKeys = !root.showKeys
+        else if (text === "/") { root.goTo("connect"); root.editField(connectField) }
+        else if (text === "i") {
+          if (root.stop === "connect") root.editField(connectField)
+          else if (root.stop === "pairAddr") root.editField(pairEndpointField)
+          else if (root.stop === "pairCode") root.editField(pairCodeField)
+        }
+        else if (text === "w") {
+          if (root.usbDevices.length > 0) backend.enableWifi(root.usbDevices[0].serial)
+          else root.note("w needs a USB-connected phone", false)
+        }
       }
 
       Column {
@@ -167,6 +242,7 @@ Ui.Panel {
             text: backend.installLaunched ? "Install again" : "Install"
             iconText: "󰏔"
             bordered: true
+            hasCursor: root.stop === "install"
             foreground: root.foreground
             fontFamily: root.fontFamily
             tooltipText: "Opens a terminal and asks for your password"
@@ -215,8 +291,7 @@ Ui.Panel {
               required property var modelData
               required property int index
               readonly property bool isMirroring: backend.mirroring && backend.mirroring.serial === modelData.serial
-              readonly property int readyIndex: root.readyDevices.findIndex(function(d) { return d.serial === modelData.serial })
-              readonly property bool selected: modelData.ready && readyIndex === root.cursor
+              readonly property bool selected: root.stop === "dev:" + index
               width: parent ? parent.width : 0
               height: rowText.implicitHeight + Style.spacing.sm
 
@@ -289,9 +364,8 @@ Ui.Panel {
               MouseArea {
                 anchors.fill: parent
                 anchors.rightMargin: rowActions.width
-                enabled: row.modelData.ready
-                onClicked: root.cursor = row.readyIndex
-                onDoubleClicked: backend.mirror(row.modelData)
+                onClicked: root.cursor = row.index
+                onDoubleClicked: if (row.modelData.ready) backend.mirror(row.modelData)
               }
             }
           }
@@ -324,8 +398,10 @@ Ui.Panel {
               enabled: !backend.actionBusy
               text: root.connectEndpoint
               onTextChanged: if (text !== root.connectEndpoint) root.connectEndpoint = text
-              onAccepted: backend.connect(root.connectEndpoint)
-              Keys.onEscapePressed: root.close()
+              hasCursor: root.stop === "connect"
+              onActiveFocusChanged: if (activeFocus) root.goTo("connect")
+              onAccepted: { backend.connect(root.connectEndpoint); keyCatcher.forceActiveFocus() }
+              Keys.onEscapePressed: keyCatcher.forceActiveFocus()
             }
             Ui.Button {
               id: connectButton
@@ -341,6 +417,7 @@ Ui.Panel {
           Ui.Button {
             text: root.showPairing ? "Hide pairing" : "Pair a new phone (Android 11+)"
             iconText: "󰌆"
+            hasCursor: root.stop === "pairToggle"
             foreground: root.foreground
             fontFamily: root.fontFamily
             onClicked: root.showPairing = !root.showPairing
@@ -372,8 +449,10 @@ Ui.Panel {
                 enabled: !backend.actionBusy
                 text: root.pairEndpoint
                 onTextChanged: if (text !== root.pairEndpoint) root.pairEndpoint = text
+                hasCursor: root.stop === "pairAddr"
+                onActiveFocusChanged: if (activeFocus) root.goTo("pairAddr")
                 onAccepted: pairCodeField.forceActiveFocus()
-                Keys.onEscapePressed: root.close()
+                Keys.onEscapePressed: keyCatcher.forceActiveFocus()
               }
               Ui.TextField {
                 id: pairCodeField
@@ -385,12 +464,15 @@ Ui.Panel {
                 enabled: !backend.actionBusy
                 text: root.pairCode
                 onTextChanged: if (text !== root.pairCode) root.pairCode = text
-                onAccepted: backend.pair(root.pairEndpoint, root.pairCode)
-                Keys.onEscapePressed: root.close()
+                hasCursor: root.stop === "pairCode"
+                onActiveFocusChanged: if (activeFocus) root.goTo("pairCode")
+                onAccepted: { backend.pair(root.pairEndpoint, root.pairCode); keyCatcher.forceActiveFocus() }
+                Keys.onEscapePressed: keyCatcher.forceActiveFocus()
               }
               Ui.Button {
                 text: "Pair"
                 bordered: true
+                hasCursor: root.stop === "pairGo"
                 foreground: root.foreground
                 fontFamily: root.fontFamily
                 enabled: root.pairEndpoint.trim() !== "" && root.pairCode.trim() !== "" && !backend.actionBusy
@@ -417,6 +499,19 @@ Ui.Panel {
           font.pixelSize: Style.font.bodySmall
         }
 
+        Text {
+          width: parent.width
+          visible: root.showKeys
+          text: "Panel: j/k move · enter act · / connect · i edit field · esc back/close\n"
+            + "  p pairing · w Wi-Fi (USB phone) · x disconnect · H home · r refresh · ? this list\n"
+            + "Mirror window: Alt+H home · Alt+B back · Alt+S app switch · Alt+P power · Alt+↑/↓ volume\n"
+            + "Global: Super+Alt+A open this panel"
+          color: root.dim
+          wrapMode: Text.WordWrap
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+
         Ui.PanelSeparator {
           width: parent.width
           foreground: root.foreground
@@ -438,7 +533,7 @@ Ui.Panel {
             font.pixelSize: Style.font.caption
             text: {
               if (backend.lastSuccessAt <= 0) return backend.loading ? "Checking…" : "Not checked yet"
-              return "Updated " + Model.elapsed(backend.lastSuccessAt, root.nowMs) + "  ·  j/k · enter · w · p"
+              return "Updated " + Model.elapsed(backend.lastSuccessAt, root.nowMs) + "  ·  j/k · enter · / · H · ? help"
             }
           }
 

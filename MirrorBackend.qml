@@ -319,6 +319,14 @@ Item {
     mirrorProc.running = true
   }
 
+  // Android Home key on the given device (what scrcpy's MOD+h does in its window).
+  function goHome(device) {
+    homeProc.command = [root.resolvedAdb, "-s", device.serial, "shell", "input", "keyevent", "3"]
+    homeProc.running = true
+  }
+
+  Process { id: homeProc }
+
   function stopMirror() {
     if (mirrorProc.running) mirrorProc.signal(15)
   }
