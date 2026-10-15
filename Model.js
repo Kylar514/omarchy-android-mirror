@@ -8,6 +8,10 @@ var DEFAULT_ADB = "/usr/bin/adb"
 var DEFAULT_SCRCPY = "/usr/bin/scrcpy"
 var SDK_ADB = "~/Android/Sdk/platform-tools/adb"
 var WIFI_PORT = 5555
+var NMAP = "/usr/bin/nmap"
+// Wireless debugging picks a random port; most land here, so scan it first.
+var SCAN_PRIMARY = "30000-50000"
+var SCAN_REST = "1-29999,50001-65535"
 
 function clamp(value, lo, hi) {
   var n = Number(value)
@@ -157,4 +161,44 @@ function elapsed(fromMs, nowMs) {
   var m = Math.round(s / 60)
   if (m < 60) return m + "m ago"
   return Math.round(m / 60) + "h ago"
+}
+
+// Saved devices live in a small JSON file: {"devices":[{name, ip, lastPort}]}.
+// The ip goes to nmap as an argument, so only a plain IPv4 address is accepted.
+function isIPv4(ip) {
+  return /^\d{1,3}(\.\d{1,3}){3}$/.test(String(ip || ""))
+}
+
+function parseSaved(text) {
+  var data
+  try { data = JSON.parse(String(text || "")) } catch (e) { return [] }
+  var list = data && Array.isArray(data.devices) ? data.devices : []
+  return list.filter(function(d) { return d && isIPv4(d.ip) }).map(function(d) {
+    return { name: String(d.name || d.ip), ip: d.ip, lastPort: Math.round(clamp(d.lastPort, 0, 65535)) }
+  })
+}
+
+function serializeSaved(list) {
+  return JSON.stringify({ devices: list }, null, 2) + "\n"
+}
+
+// Same ip replaces the old entry, so saving a phone twice never duplicates it.
+function upsertSaved(list, entry) {
+  var out = list.filter(function(d) { return d.ip !== entry.ip })
+  out.push(entry)
+  return out
+}
+
+// nmap -oG lines look like "Host: 1.2.3.4 ()\tPorts: 41235/open/tcp//unknown///".
+// Returns open ports in scan order, minus `skip`, capped so a chatty host
+// cannot turn into dozens of adb connects.
+function parseNmapPorts(text, skip) {
+  var out = []
+  var re = /(\d+)\/open\//g
+  var m
+  while ((m = re.exec(String(text || ""))) !== null) {
+    var port = parseInt(m[1], 10)
+    if (port !== skip && out.indexOf(port) === -1) out.push(port)
+  }
+  return out.slice(0, 10)
 }

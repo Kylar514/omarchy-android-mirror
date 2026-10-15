@@ -29,6 +29,10 @@ Ui.Panel {
   property int cursor: 0
   property bool showPairing: false
   property bool showKeys: false
+  // Inline name editor shared by "save this device" and "rename a saved one".
+  property string nameMode: ""      // "" | "save" | "rename"
+  property var nameTarget: null     // device (save) or saved index (rename)
+  property string nameDraft: ""
   property string pairEndpoint: ""
   property string pairCode: ""
   property string connectEndpoint: ""
@@ -45,6 +49,7 @@ Ui.Panel {
     if (backend.toolsMissing) return ["install"]
     var s = []
     for (var i = 0; i < devices.length; i++) s.push("dev:" + i)
+    for (var j = 0; j < backend.saved.length; j++) s.push("saved:" + j)
     s.push("connect", "pairToggle")
     if (showPairing) s.push("pairAddr", "pairCode", "pairGo")
     return s
@@ -60,6 +65,41 @@ Ui.Panel {
   function note(message, ok) {
     backend.actionOk = ok
     backend.actionMessage = message
+  }
+
+  function savedAtCursor() {
+    return stop.indexOf("saved:") === 0 ? backend.saved[parseInt(stop.slice(6), 10)] : null
+  }
+
+  function startNaming(mode, target, draft) {
+    nameMode = mode
+    nameTarget = target
+    nameDraft = draft
+    Qt.callLater(function() { nameField.forceActiveFocus(); nameField.selectAll() })
+  }
+
+  function cancelNaming() {
+    nameMode = ""
+    keyCatcher.forceActiveFocus()
+  }
+
+  function commitName() {
+    var name = nameDraft.trim()
+    if (nameMode === "save") {
+      var ep = Model.parseEndpoint(nameTarget.serial, 0)
+      if (ep && backend.saveDevice(name, ep.host, ep.port)) note("Saved " + (name || ep.host), true)
+      else note("Only Wi-Fi devices with an IPv4 address can be saved", false)
+    } else if (nameMode === "rename") {
+      backend.renameSaved(nameTarget, name)
+    }
+    cancelNaming()
+  }
+
+  function saveCursorDevice() {
+    var d = stop.indexOf("dev:") === 0 ? devices[parseInt(stop.slice(4), 10)] : null
+    var ep = d ? Model.parseEndpoint(d.serial, 0) : null
+    if (!d || !d.ready || d.transport !== "wifi" || !ep) { note("s saves a connected Wi-Fi device", false); return }
+    startNaming("save", d, d.model || ep.host)
   }
 
   function cursorDevice() {
@@ -92,6 +132,8 @@ Ui.Panel {
     case "pairCode": editField(pairCodeField); break
     case "pairGo": backend.pair(pairEndpoint, pairCode); break
     default:
+      var entry = savedAtCursor()
+      if (entry) { backend.reconnect(entry); break }
       var d = cursorDevice()
       if (d && !d.ready) note(Model.stateHint(d.state), false)
       else mirrorSelected()
@@ -174,11 +216,14 @@ Ui.Panel {
       blocked: (pairEndpointField.visible && pairEndpointField.activeFocus)
         || (pairCodeField.visible && pairCodeField.activeFocus)
         || (connectField.visible && connectField.activeFocus)
+        || (nameField.visible && nameField.activeFocus)
 
       onActivateRequested: root.activate()
       onCloseRequested: root.close()
       onMoveRequested: function(dx, dy) { if (dy !== 0) root.moveCursor(dy) }
       onDeleteRequested: {
+        var entry = root.savedAtCursor()
+        if (entry) { backend.forgetSaved(root.cur - root.devices.length); root.note("Forgot " + entry.name, true); return }
         var d = root.cursorDevice()
         if (d && d.transport === "wifi") backend.disconnect(d.serial)
         else root.note("x disconnects a Wi-Fi device", false)
@@ -187,6 +232,13 @@ Ui.Panel {
         if (text === "r") root.refreshNow()
         else if (text === "p") root.togglePairing()
         else if (text === "H") root.goHome()
+        else if (text === "s") root.saveCursorDevice()
+        else if (text === "c") backend.cancelAction()
+        else if (text === "e") {
+          var entry = root.savedAtCursor()
+          if (entry) root.startNaming("rename", root.cur - root.devices.length, entry.name)
+          else root.note("e renames a saved device", false)
+        }
         else if (text === "?") root.showKeys = !root.showKeys
         else if (text === "/") { root.goTo("connect"); root.editField(connectField) }
         else if (text === "i") {
@@ -371,6 +423,109 @@ Ui.Panel {
           }
         }
 
+        // Saved devices: pick one and the plugin finds its current port.
+        Column {
+          width: parent.width
+          spacing: Style.spacing.xs
+          visible: !backend.toolsMissing && (backend.saved.length > 0 || root.nameMode !== "")
+
+          Ui.PanelSectionHeader {
+            width: parent.width
+            text: "Saved"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+          }
+
+          Repeater {
+            model: backend.saved
+
+            delegate: Item {
+              id: savedRow
+              required property var modelData
+              required property int index
+              readonly property bool selected: root.stop === "saved:" + index
+              width: parent ? parent.width : 0
+              height: savedText.implicitHeight + Style.spacing.sm
+
+              Rectangle {
+                anchors.fill: parent
+                radius: Style.cornerRadius
+                color: savedRow.selected ? Style.selectedFillFor(root.foreground, Color.accent) : "transparent"
+              }
+
+              Column {
+                id: savedText
+                anchors.left: parent.left
+                anchors.leftMargin: Style.spacing.xs
+                anchors.right: reconnectButton.left
+                anchors.verticalCenter: parent.verticalCenter
+                Text {
+                  width: parent.width
+                  text: savedRow.modelData.name
+                  color: root.foreground
+                  elide: Text.ElideRight
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                  font.weight: Font.Medium
+                }
+                Text {
+                  width: parent.width
+                  text: savedRow.modelData.ip + (savedRow.modelData.lastPort > 0 ? " · last port " + savedRow.modelData.lastPort : " · port unknown")
+                  color: root.dim
+                  elide: Text.ElideRight
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
+              }
+
+              Ui.Button {
+                id: reconnectButton
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                text: "Reconnect"
+                iconText: "󰑐"
+                bordered: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                enabled: !backend.actionBusy
+                onClicked: backend.reconnect(savedRow.modelData)
+              }
+
+              MouseArea {
+                anchors.fill: parent
+                anchors.rightMargin: reconnectButton.width
+                onClicked: root.cursor = root.devices.length + savedRow.index
+                onDoubleClicked: backend.reconnect(savedRow.modelData)
+              }
+            }
+          }
+
+          Row {
+            width: parent.width
+            spacing: Style.spacing.sm
+            visible: root.nameMode !== ""
+            Text {
+              anchors.verticalCenter: parent.verticalCenter
+              text: root.nameMode === "save" ? "Save as" : "Rename"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+            Ui.TextField {
+              id: nameField
+              width: parent.width - parent.spacing - 64
+              placeholderText: "Name"
+              foreground: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              text: root.nameDraft
+              onTextChanged: if (text !== root.nameDraft) root.nameDraft = text
+              onAccepted: root.commitName()
+              Keys.onEscapePressed: root.cancelNaming()
+            }
+          }
+        }
+
         // Wi-Fi: connect to a known address, or pair an Android 11+ phone
         // with the code from Wireless debugging (no cable ever needed).
         Column {
@@ -487,7 +642,7 @@ Ui.Panel {
           width: parent.width
           visible: text !== ""
           text: {
-            if (backend.actionBusy) return "Running adb " + backend.actionName + "…"
+            if (backend.actionBusy) return (backend.actionLabel !== "" ? backend.actionLabel : "Running adb " + backend.actionName + "…") + "  (c cancels)"
             if (backend.actionMessage !== "") return backend.actionMessage
             if (backend.mirrorError !== "") return backend.mirrorError
             if (backend.fetchError !== "") return backend.fetchError
@@ -502,8 +657,9 @@ Ui.Panel {
         Text {
           width: parent.width
           visible: root.showKeys
-          text: "Panel: j/k move · enter act · / connect · i edit field · esc back/close\n"
-            + "  p pairing · w Wi-Fi (USB phone) · x disconnect · H home · r refresh · ? this list\n"
+          text: "Panel: j/k move · enter act (mirror / reconnect) · / connect · i edit field · esc back/close\n"
+            + "  s save device · e rename saved · x disconnect / forget · c cancel · p pairing · w Wi-Fi (USB phone)\n"
+            + "  H home · r refresh · ? this list\n"
             + "Mirror window: Alt+H home · Alt+B back · Alt+S app switch · Alt+P power · Alt+↑/↓ volume\n"
             + "Global: Super+Alt+A open this panel"
           color: root.dim

@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs"
 
 const src = readFileSync(new URL("../Model.js", import.meta.url), "utf8").replace(".pragma library", "")
 const M = new Function(src + `
-  return { parseDevices, scrcpyArgs, parseEndpoint, pairVerdict, connectVerdict, parseWlanIp, stateLabel }`)()
+  return { parseDevices, scrcpyArgs, parseEndpoint, pairVerdict, connectVerdict, parseWlanIp, stateLabel, isIPv4, parseSaved, serializeSaved, upsertSaved, parseNmapPorts }`)()
 
 test("parseDevices handles usb, wifi, unauthorized, no permissions", () => {
   const out = M.parseDevices(`List of devices attached
@@ -62,4 +62,21 @@ test("stateLabel", () => {
   assert.equal(M.stateLabel([], null), "No phone connected")
   assert.equal(M.stateLabel([{ ready: true }], null), "1 phone ready")
   assert.equal(M.stateLabel([], { model: "Pixel 8" }), "Mirroring Pixel 8")
+})
+
+test("saved devices round-trip and reject unsafe ips", () => {
+  const list = M.upsertSaved([], { name: "Pixel", ip: "192.168.1.42", lastPort: 41235 })
+  const again = M.upsertSaved(list, { name: "My phone", ip: "192.168.1.42", lastPort: 39999 })
+  assert.equal(again.length, 1)
+  assert.deepEqual(M.parseSaved(M.serializeSaved(again)), [{ name: "My phone", ip: "192.168.1.42", lastPort: 39999 }])
+  assert.deepEqual(M.parseSaved('{"devices":[{"name":"x","ip":"-oN/etc/passwd"}]}'), [])
+  assert.deepEqual(M.parseSaved("not json"), [])
+  assert.equal(M.parseSaved('{"devices":[{"ip":"10.0.0.1"}]}')[0].name, "10.0.0.1")
+})
+
+test("parseNmapPorts skips the known port and caps the list", () => {
+  const out = "# Nmap scan\nHost: 192.168.1.42 ()\tPorts: 41235/open/tcp//unknown///, 37001/open/tcp//unknown///\n"
+  assert.deepEqual(M.parseNmapPorts(out, 0), [41235, 37001])
+  assert.deepEqual(M.parseNmapPorts(out, 41235), [37001])
+  assert.deepEqual(M.parseNmapPorts("Host: x ()\tStatus: Up", 0), [])
 })

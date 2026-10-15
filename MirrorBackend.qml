@@ -29,6 +29,7 @@ Item {
   // One adb action at a time (pair / connect / tcpip / disconnect).
   property bool actionBusy: false
   property string actionName: ""
+  property string actionLabel: ""
   property string actionMessage: ""
   property bool actionOk: true
 
@@ -53,7 +54,7 @@ Item {
   // while a tool is reported missing so installing it heals the panel.
   onAdbPathChanged: checkTools()
   onScrcpyPathChanged: checkTools()
-  Component.onCompleted: checkTools()
+  Component.onCompleted: { checkTools(); loadProc.running = true }
 
   function checkTools() { toolCheck.running = true }
 
@@ -151,6 +152,7 @@ Item {
     actionBusy = true
     actionOk = true
     actionName = name
+    actionLabel = ""
     actionMessage = ""
     steps = list
     stepOut = {}
@@ -161,16 +163,31 @@ Item {
     if (steps.length === 0) {
       actionBusy = false
       actionName = ""
+      actionLabel = ""
       refresh()
       return
     }
     var step = steps[0]
+    if (step.label) actionLabel = step.label
+    // A step runs adb, or any other absolute-path command given as `cmd`.
     // args may be a function so a later step can use what an earlier one found.
     var args = typeof step.args === "function" ? step.args() : step.args
-    actionProc.command = [root.resolvedAdb].concat(args)
+    actionProc.command = step.cmd ? step.cmd : [root.resolvedAdb].concat(args)
     actionProc.secret = step.stdin || ""
     actionProc.stdinEnabled = actionProc.secret !== ""
     actionProc.running = true
+  }
+
+  function cancelAction() {
+    if (!actionBusy) return
+    steps = []
+    retryTimer.stop()
+    if (actionProc.running) actionProc.signal(15)
+    actionBusy = false
+    actionName = ""
+    actionLabel = ""
+    actionOk = false
+    actionMessage = "Cancelled"
   }
 
   function finishSteps(ok, message) {
@@ -192,6 +209,7 @@ Item {
     }
     onExited: function(exitCode) {
       var step = root.steps[0]
+      if (!step) return
       var verdict = step.onDone(String(actionOut.text || ""), String(actionErr.text || ""), exitCode)
       if (verdict === "retry" && step.retries > 0) {
         step.retries -= 1
@@ -238,6 +256,7 @@ Item {
       args: ["connect", ep.address],
       onDone: function(out, err, code) {
         var v = Model.connectVerdict(out, err, code)
+        if (v.ok) root.rememberPort(ep.host, ep.port)
         root.finishSteps(v.ok, v.message)
         return false
       }
@@ -290,6 +309,106 @@ Item {
         }
       }
     ])
+  }
+
+  // --- saved devices ------------------------------------------------------------
+  // A wireless-debugging phone keeps its pairing but gets a new port whenever
+  // it reconnects. Remember its ip, and find the port again by scanning.
+  property var saved: []
+  readonly property string savedPath: (Quickshell.env("XDG_STATE_HOME") || (Quickshell.env("HOME") + "/.local/state")) + "/omarchy/android-mirror.json"
+
+  Process {
+    id: loadProc
+    command: ["/usr/bin/cat", root.savedPath]
+    stdout: StdioCollector {
+      onStreamFinished: root.saved = Model.parseSaved(text)
+    }
+  }
+
+  Process { id: saveProc }
+
+  function persist(list) {
+    saved = list
+    saveProc.command = ["/usr/bin/sh", "-c",
+      "mkdir -p \"$(dirname \"$2\")\" && printf '%s' \"$1\" > \"$2.tmp\" && mv \"$2.tmp\" \"$2\"",
+      "_", Model.serializeSaved(list), root.savedPath]
+    saveProc.running = true
+  }
+
+  function saveDevice(name, ip, port) {
+    if (!Model.isIPv4(ip)) return false
+    persist(Model.upsertSaved(saved, { name: String(name || "").trim() || ip, ip: ip, lastPort: port || 0 }))
+    return true
+  }
+
+  function renameSaved(index, name) {
+    var d = saved[index]
+    if (d) persist(Model.upsertSaved(saved, { name: String(name || "").trim() || d.ip, ip: d.ip, lastPort: d.lastPort }))
+  }
+
+  function forgetSaved(index) {
+    persist(saved.filter(function(d, i) { return i !== index }))
+  }
+
+  function rememberPort(ip, port) {
+    for (var i = 0; i < saved.length; i++) {
+      if (saved[i].ip === ip && saved[i].lastPort !== port) {
+        persist(Model.upsertSaved(saved, { name: saved[i].name, ip: ip, lastPort: port }))
+        return
+      }
+    }
+  }
+
+  // Last known port first, then every open port nmap finds on that ip:
+  // 30000-50000 (where Android usually picks), then the rest of the range.
+  // Each candidate is tried with `adb connect`; the first to answer wins.
+  function reconnect(entry) {
+    var ip = entry.ip
+    function connectStep(port) {
+      return {
+        args: ["connect", ip + ":" + port],
+        onDone: function(out, err, code) {
+          if (!Model.connectVerdict(out, err, code).ok) return true
+          root.rememberPort(ip, port)
+          root.finishSteps(true, "Connected to " + entry.name + " (" + ip + ":" + port + ")")
+          return false
+        }
+      }
+    }
+    function scanStep(label, range) {
+      return {
+        label: label,
+        cmd: [Model.NMAP, "-Pn", "-n", "-T4", "--max-retries", "1", "--host-timeout", "90s",
+          "--open", "-p", range, "-oG", "-", ip],
+        onDone: function(out, err, code) {
+          if (code !== 0) { root.finishSteps(false, String(err || out).trim() || "nmap failed"); return false }
+          var found = Model.parseNmapPorts(out, entry.lastPort).map(connectStep)
+          root.steps = [root.steps[0]].concat(found, root.steps.slice(1))
+          return true
+        }
+      }
+    }
+    var list = []
+    if (entry.lastPort > 0) list.push(connectStep(entry.lastPort))
+    list.push({
+      label: "Checking for nmap…",
+      cmd: ["/usr/bin/test", "-x", Model.NMAP],
+      onDone: function(out, err, code) {
+        if (code === 0) return true
+        root.finishSteps(false, "Could not connect on the last port, and nmap is not installed (omarchy pkg add nmap)")
+        return false
+      }
+    })
+    list.push(scanStep("Scanning " + ip + " ports 30000-50000…", Model.SCAN_PRIMARY))
+    list.push(scanStep("Scanning " + ip + " remaining ports…", Model.SCAN_REST))
+    list.push({
+      cmd: ["/usr/bin/true"],
+      onDone: function() {
+        root.finishSteps(false, "No open adb port found at " + ip + ". Is Wireless debugging on, and is this phone paired with this PC?")
+        return false
+      }
+    })
+    runSteps("reconnect", list)
   }
 
   // --- mirroring ----------------------------------------------------------------

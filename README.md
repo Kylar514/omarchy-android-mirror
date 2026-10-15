@@ -54,6 +54,17 @@ Cable-free from the start (Android 11+): _Developer options → Wireless
 debugging → Pair device with pairing code_, then **Pair a new phone** in the
 panel and type the address and code shown.
 
+### Saved devices
+
+Wireless debugging keeps its pairing but picks a new port every time it
+restarts. Select a connected Wi-Fi device and press `s` to save it under a name
+of your choice (stored in `~/.local/state/omarchy/android-mirror.json`: name,
+ip and last port, never a pairing code). Later, select it under **Saved** and
+press `enter`: the plugin tries the last port, then scans that one ip with
+`nmap` (ports 30000-50000 first, then the rest) and runs `adb connect` on what
+it finds. `e` renames, `x` forgets, `c` cancels a running scan. The phone's ip
+should not change, so give it a DHCP reservation on your router.
+
 ### Wi-Fi is slower than USB — tuning
 
 Over Wi-Fi the plugin automatically uses a lighter profile (800 px, 2 Mbps,
@@ -89,6 +100,7 @@ config.
 | `adb`      | `android-tools` | listing phones, Wi-Fi pairing/connect |
 | `scrcpy`   | `scrcpy`        | the mirror window, keyboard and mouse |
 | udev rules | `android-udev`  | USB access without root               |
+| `nmap`      | `nmap`          | finding a saved phone's new port      |
 
 The **Install** button runs `omarchy pkg add scrcpy android-tools android-udev`
 in a terminal, which uses `sudo` (you are asked for your password). No other
