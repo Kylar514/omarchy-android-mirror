@@ -21,7 +21,7 @@ Ui.Panel {
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
-  readonly property var devices: backend.devices
+  readonly property var devices: Model.withSavedNames(backend.devices, backend.saved)
   readonly property var readyDevices: devices.filter(function(d) { return d.ready })
   readonly property var usbDevices: readyDevices.filter(function(d) { return d.transport === "usb" })
   readonly property string stateLabel: Model.stateLabel(devices, backend.mirroring)

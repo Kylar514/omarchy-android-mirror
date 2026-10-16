@@ -55,8 +55,18 @@ function parseDevices(text) {
   return out
 }
 
+// Adds `name` to Wi-Fi devices whose ip is saved; the port may differ.
+function withSavedNames(devices, saved) {
+  return devices.map(function(d) {
+    var m = d.serial.match(/^(\d+\.\d+\.\d+\.\d+):\d+$/)
+    var hit = m && saved.filter(function(s) { return s.ip === m[1] })[0]
+    return hit ? Object.assign({}, d, { name: hit.name }) : d
+  })
+}
+
 function deviceTitle(d) {
   if (!d) return ""
+  if (d.name) return d.name
   if (d.model !== "") return d.model
   return d.serial
 }
@@ -80,7 +90,7 @@ function stateHint(state) {
 
 // One-line summary for the bar tooltip / hero meta.
 function stateLabel(devices, mirroring) {
-  if (mirroring) return "Mirroring " + (mirroring.model || mirroring.serial)
+  if (mirroring) return "Mirroring " + (mirroring.name || mirroring.model || mirroring.serial)
   var ready = devices.filter(function(d) { return d.ready }).length
   if (devices.length === 0) return "No phone connected"
   if (ready === 0) return devices.length + " device(s), none ready"

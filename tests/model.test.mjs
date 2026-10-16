@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs"
 
 const src = readFileSync(new URL("../Model.js", import.meta.url), "utf8").replace(".pragma library", "")
 const M = new Function(src + `
-  return { parseDevices, scrcpyArgs, parseEndpoint, pairVerdict, connectVerdict, parseWlanIp, stateLabel, isIPv4, parseSaved, serializeSaved, upsertSaved, parseNmapPorts }`)()
+  return { parseDevices, scrcpyArgs, parseEndpoint, pairVerdict, connectVerdict, parseWlanIp, stateLabel, withSavedNames, deviceTitle, isIPv4, parseSaved, serializeSaved, upsertSaved, parseNmapPorts }`)()
 
 test("parseDevices handles usb, wifi, unauthorized, no permissions", () => {
   const out = M.parseDevices(`List of devices attached
@@ -79,4 +79,12 @@ test("parseNmapPorts skips the known port and caps the list", () => {
   assert.deepEqual(M.parseNmapPorts(out, 0), [41235, 37001])
   assert.deepEqual(M.parseNmapPorts(out, 41235), [37001])
   assert.deepEqual(M.parseNmapPorts("Host: x ()\tStatus: Up", 0), [])
+})
+
+test("saved name wins over the model, matched by ip not port", () => {
+  const devs = M.parseDevices("192.168.1.42:40001 device model:SM_G973F transport_id:4\nR58M1234ABC device usb:1-2 model:Pixel_8 transport_id:3\n")
+  const named = M.withSavedNames(devs, [{ name: "My phone", ip: "192.168.1.42", lastPort: 39999 }])
+  assert.equal(M.deviceTitle(named[0]), "My phone")
+  assert.equal(M.deviceTitle(named[1]), "Pixel 8")
+  assert.equal(M.stateLabel([], named[0]), "Mirroring My phone")
 })
